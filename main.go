@@ -16,7 +16,8 @@ import (
 
 func main() {
 	// Setup logger
-	logger, err := zap.NewProduction()
+	// logger, err := zap.NewProduction()
+	logger, err := zap.NewDevelopment()
 	if err != nil {
 		fmt.Println("Error initializing logger:", err.Error())
 	}
@@ -30,17 +31,21 @@ func main() {
 
 func run(logger *zap.Logger) error {
 	// 1. Load config
+	logger.Info("Loading Config")
 	config, err := loadConfig()
 	if err != nil {
 		return err
 	}
+	logger.Info("Config Loaded")
 
 	// 2. Connect to mongodb
+	logger.Info("Connecting to mongo")
 	mongoClient, err := connectMongo(config, logger)
 	if err != nil {
 		return err
 	}
-	mongoStore := internal.NewMongoStore(mongoClient)
+	mongoStore := internal.NewMongoStore(mongoClient.Database(config.MongoDBName), logger)
+	logger.Info("Mongo Connected")
 
 	// 3. Start the scheduler to begin collecting
 	cronSchedule, err := cron.ParseStandard(config.Cron)
@@ -55,7 +60,8 @@ func run(logger *zap.Logger) error {
 		logger.Info("Next Scheduled Collect", zap.Time("time", nextTime))
 		time.Sleep(nextTime.Sub(time.Now()))
 
-		err = collector.Collect()
+		ctx := context.TODO()
+		err = collector.Collect(ctx)
 		if err != nil {
 			logger.Error("Error collecting", zap.Error(err))
 		}

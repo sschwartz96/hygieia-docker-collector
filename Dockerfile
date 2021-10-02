@@ -3,6 +3,7 @@ FROM golang:1.17-alpine AS build
 WORKDIR /hygieia-docker-collector
 
 COPY go.mod go.mod
+COPY go.sum go.sum
 RUN go mod download
 
 COPY main.go main.go
