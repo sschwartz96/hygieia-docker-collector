@@ -13,5 +13,5 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o app .
 # tiny run container
 FROM alpine:latest
 COPY --from=build /hygieia-docker-collector/app /hygieia-docker-collector/app
-
+WORKDIR /hygieia-docker-collector
 CMD /hygieia-docker-collector/app

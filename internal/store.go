@@ -18,23 +18,31 @@ const (
 	collectorCollection      = "collectors"
 	collectorItemsCollection = "collector_items"
 	containerCollection      = "docker_containers"
+	containerStatsCollection = "docker_container_stats"
+	networkCollection        = "docker_networks"
+	volumeCollection         = "docker_volumes"
 )
 
 type Store interface {
 	// CreateUniqueIndexes takes in a field to collection make to create unique indexes
-	CreateUniqueIndexes(context.Context, map[string]string)
+	CreateUniqueIndexes(context.Context, []UniqueIndex)
 
+	DoesCollectorExist(context.Context, string) (*primitive.ObjectID, error)
 	// RegisterCollector registers collector to the database.
-	RegisterCollector(context.Context) (*primitive.ObjectID, error)
-	UpdateCollector(context.Context, *primitive.ObjectID) error
+	RegisterCollector(context.Context, string) (*primitive.ObjectID, error)
+	// UpdateCollector takes in the collector id and the duration of the last collection
+	UpdateCollector(context.Context, *primitive.ObjectID, time.Duration) error
 
 	FindAllCollectorItems(context.Context) ([]models.CollectorItem, error)
 	UpdateCollectorItem(context.Context, *primitive.ObjectID) error
 
 	UpsertContainers(context.Context, []types.Container)
-	FindContainer(context.Context, string) (*models.Container, error)
-	UpdateContainer(context.Context, *models.Container) error
-	DeleteContainer(context.Context, string) error
+
+	UpsertNetworks(context.Context, []types.NetworkResource)
+
+	UpsertVolumes(context.Context, []*types.Volume)
+
+	UpsertContiainerStats(context.Context, types.StatsJSON) error
 }
 
 type MongoStore struct {
@@ -42,14 +50,19 @@ type MongoStore struct {
 	logger *zap.Logger
 }
 
+type UniqueIndex struct {
+	field      string
+	collection string
+}
+
 func NewMongoStore(db *mongo.Database, logger *zap.Logger) *MongoStore {
 	return &MongoStore{db: db, logger: logger}
 }
 
-func (m *MongoStore) CreateUniqueIndexes(ctx context.Context, fieldMap map[string]string) {
-	for field, collection := range fieldMap {
-		index := mongo.IndexModel{Keys: bson.M{field: 1}, Options: options.Index().SetUnique(true)}
-		indexName, err := m.db.Collection(collection).Indexes().CreateOne(ctx, index)
+func (m *MongoStore) CreateUniqueIndexes(ctx context.Context, indexes []UniqueIndex) {
+	for _, index := range indexes {
+		indexModel := mongo.IndexModel{Keys: bson.M{index.field: 1}, Options: options.Index().SetUnique(true)}
+		indexName, err := m.db.Collection(index.collection).Indexes().CreateOne(ctx, indexModel)
 		if err != nil {
 			m.logger.Error("Error Creating Index", zap.Error(err))
 		}
@@ -57,10 +70,29 @@ func (m *MongoStore) CreateUniqueIndexes(ctx context.Context, fieldMap map[strin
 	}
 }
 
+func (m *MongoStore) DoesCollectorExist(ctx context.Context, name string) (*primitive.ObjectID, error) {
+	res := m.db.Collection(collectorCollection).FindOne(ctx, bson.M{"name": name})
+	err := res.Err()
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			m.logger.Info("ErrNoDocuments)")
+			return nil, nil
+		}
+		return nil, err
+	}
+	var collector models.Collector
+	err = res.Decode(&collector)
+	if err != nil {
+		return nil, err
+	}
+	return &collector.ID, err
+}
+
 // RegisterCollector registers collector to the database.
-func (m *MongoStore) RegisterCollector(ctx context.Context) (*primitive.ObjectID, error) {
+func (m *MongoStore) RegisterCollector(ctx context.Context, name string) (*primitive.ObjectID, error) {
 	c := models.Collector{
-		Name:                     "docker-hygieia-collector",
+		ID:                       primitive.NewObjectID(),
+		Name:                     name,
 		CollectorType:            "Docker",
 		Enabled:                  true,
 		Online:                   true,
@@ -68,7 +100,7 @@ func (m *MongoStore) RegisterCollector(ctx context.Context) (*primitive.ObjectID
 		UniqueFields:             nil,
 		AllFields:                nil,
 		LastExecuted:             time.Now().Unix(),
-		LastExectuedTime:         time.Now(),
+		LastExecutedTime:         time.Now(),
 		LastExecutionRecordCount: 0,
 		LastExecutedSeconds:      0,
 	}
@@ -83,14 +115,18 @@ func (m *MongoStore) RegisterCollector(ctx context.Context) (*primitive.ObjectID
 	return &id, err
 }
 
-func (m *MongoStore) UpdateCollector(ctx context.Context, id *primitive.ObjectID) error {
+func (m *MongoStore) UpdateCollector(ctx context.Context, id *primitive.ObjectID, lastExecutedDuration time.Duration) error {
 	res, err := m.db.Collection(collectorCollection).UpdateOne(
 		ctx,
 		bson.M{"_id": id},
-		bson.M{"$set": bson.M{
-			"lastExecuted":     time.Now().Unix(),
-			"lastExecutedTime": time.Now(),
-		}},
+		bson.M{
+			"$set": bson.M{
+				"lastExecuted":        time.Now().Unix(),
+				"lastExecutedTime":    time.Now(),
+				"lastExecutedSeconds": lastExecutedDuration.Seconds(),
+			},
+			"$inc": bson.M{"lastExecutionRecordCount": 1},
+		},
 	)
 	if err != nil {
 		return err
@@ -116,9 +152,9 @@ func (m *MongoStore) FindAllCollectorItems(ctx context.Context) ([]models.Collec
 
 // UpdateCollectorItem takes collector_item id and updates the lastUpdated time
 func (m *MongoStore) UpdateCollectorItem(ctx context.Context, id *primitive.ObjectID) error {
-	res, err := m.db.Collection(collectorItemsCollection).UpdateByID(ctx, id, bson.M{
-		"lastUpdated": time.Now().Unix(),
-	})
+	res, err := m.db.Collection(collectorItemsCollection).UpdateByID(ctx, id,
+		bson.M{"$set": bson.M{"lastUpdated": time.Now().Unix()}},
+	)
 	if err != nil {
 		return err
 	}
@@ -142,14 +178,37 @@ func (m *MongoStore) UpsertContainers(ctx context.Context, containers []types.Co
 	}
 }
 
-func (m *MongoStore) FindContainer(_ context.Context, _ string) (*models.Container, error) {
-	panic("not implemented") // TODO: Implement
+func (m *MongoStore) UpsertNetworks(ctx context.Context, networks []types.NetworkResource) {
+	for _, n := range networks {
+		_, err := m.db.Collection(networkCollection).UpdateOne(
+			ctx, bson.M{"id": n.ID},
+			bson.M{"$set": &n},
+			options.Update().SetUpsert(true),
+		)
+		if err != nil {
+			m.logger.Error("UpsertNetworks() error upserting", zap.Error(err), zap.String("ID", n.ID))
+		}
+	}
 }
 
-func (m *MongoStore) UpdateContainer(_ context.Context, _ *models.Container) error {
-	panic("not implemented") // TODO: Implement
+func (m *MongoStore) UpsertVolumes(ctx context.Context, volumes []*types.Volume) {
+	for _, v := range volumes {
+		_, err := m.db.Collection(volumeCollection).UpdateOne(
+			ctx, bson.M{"name": v.Name},
+			bson.M{"$set": v},
+			options.Update().SetUpsert(true),
+		)
+		if err != nil {
+			m.logger.Error("UpsertVolumes() error upserting", zap.Error(err), zap.String("Name", v.Name))
+		}
+	}
 }
 
-func (m *MongoStore) DeleteContainer(_ context.Context, _ string) error {
-	panic("not implemented") // TODO: Implement
+func (m *MongoStore) UpsertContiainerStats(ctx context.Context, stats types.StatsJSON) error {
+	_, err := m.db.Collection(containerStatsCollection).UpdateOne(
+		ctx, bson.M{"id": stats.ID},
+		bson.M{"$set": &stats},
+		options.Update().SetUpsert(true),
+	)
+	return err
 }

@@ -13,6 +13,7 @@ type Config struct {
 	MongoPassword string `json:"mongo_password"`
 	MongoSSL      bool   `json:"mongo_ssl"`
 	Cron          string `json:"cron"`
+	CollectorName string `json:"collector_name"`
 }
 
 func ParseConfig(reader io.Reader) (*Config, error) {

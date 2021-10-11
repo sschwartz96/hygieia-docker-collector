@@ -53,7 +53,7 @@ func run(logger *zap.Logger) error {
 		return fmt.Errorf("Error parsing cron(%s): %v", config.Cron, err)
 	}
 
-	collector := internal.NewCollector(logger, mongoStore)
+	collector := internal.NewCollector(logger, mongoStore, config.CollectorName)
 	nextTime := time.Now()
 	for {
 		nextTime = cronSchedule.Next(nextTime)

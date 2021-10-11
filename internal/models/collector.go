@@ -10,6 +10,7 @@ type CollectorType string
 
 // Collector model used to register the collector in the db
 type Collector struct {
+	ID                       primitive.ObjectID     `bson:"_id"`
 	Name                     string                 `bson:"name"`
 	CollectorType            CollectorType          `bson:"collectorType"`
 	Enabled                  bool                   `bson:"enabled"`
@@ -18,9 +19,9 @@ type Collector struct {
 	UniqueFields             map[string]interface{} `bson:"uniqueFields"`
 	AllFields                map[string]interface{} `bson:"allFields"`
 	LastExecuted             int64                  `bson:"lastExecuted"`
-	LastExectuedTime         time.Time              `bson:"lastExectuedTime"`
+	LastExecutedTime         time.Time              `bson:"lastExecutedTime"`
 	LastExecutionRecordCount int64                  `bson:"lastExecutionRecordCount"`
-	LastExecutedSeconds      int64                  `bson:"lastExecutedSeconds"`
+	LastExecutedSeconds      float64                `bson:"lastExecutedSeconds"`
 }
 
 type CollectorItem struct {

@@ -1,2 +1,4 @@
 config.json
+config.docker.json
 main
+hygieia-docker-collector
